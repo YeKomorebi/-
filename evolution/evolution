@@ -1,0 +1,123 @@
+"""
+模型杂交模块 - TIES-Merging + SLERP
+"""
+import torch
+import numpy as np
+from typing import List, Dict, Any
+from collections import defaultdict
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class HybridizationModule:
+    """模型杂交模块"""
+    
+    def __init__(self, merge_method: str = "ties+slerp", alpha: float = 0.5):
+        """
+        初始化杂交模块
+        
+        Args:
+            merge_method: 合并方法
+            alpha: 混合比例
+        """
+        self.merge_method = merge_method
+        self.alpha = alpha
+    
+    def hybridize(self, model1: Any, model2: Any) -> Any:
+        """
+        杂交两个模型
+        
+        Args:
+            model1: 父本1
+            model2: 父本2
+            
+        Returns:
+            杂交后的模型
+        """
+        logger.info(f"杂交模型: {model1.model_id} x {model2.model_id}")
+        
+        # 提取LoRA参数
+        params1 = self._extract_lora_params(model1)
+        params2 = self._extract_lora_params(model2)
+        
+        # TIES-Merging
+        merged_params = self._ties_merge(params1, params2)
+        
+        # SLERP插值
+        final_params = self._slerp_interpolate(merged_params, self.alpha)
+        
+        # 创建新模型（这里简化处理，实际需要复制模型结构）
+        hybrid_model = self._create_hybrid_model(model1, final_params)
+        
+        logger.info(f"杂交完成: {hybrid_model.model_id}")
+        
+        return hybrid_model
+    
+    def _extract_lora_params(self, model: Any) -> Dict[str, torch.Tensor]:
+        """提取LoRA参数"""
+        params = {}
+        for name, param in model.model.named_parameters():
+            if "lora" in name.lower():
+                params[name] = param.data.clone().cpu()
+        return params
+    
+    def _ties_merge(self, params1: Dict, params2: Dict) -> Dict:
+        """
+        TIES-Merging算法
+        
+        1. Trim: 剪枝低幅度参数
+        2. Elect Sign: 选举符号
+        3. Merge: 合并
+        """
+        merged = {}
+        
+        for key in params1.keys():
+            if key not in params2:
+                continue
+            
+            p1, p2 = params1[key], params2[key]
+            
+            # Trim: 保留前20%重要参数
+            threshold1 = torch.quantile(torch.abs(p1), 0.8)
+            threshold2 = torch.quantile(torch.abs(p2), 0.8)
+            
+            mask1 = torch.abs(p1) >= threshold1
+            mask2 = torch.abs(p2) >= threshold2
+            
+            # Elect Sign: 符号选举
+            sign_agreement = torch.sign(p1) == torch.sign(p2)
+            
+            # Merge: 合并
+            merged[key] = torch.where(
+                sign_agreement,
+                (p1 + p2) / 2,
+                torch.where(mask1, p1, p2)
+            )
+        
+        return merged
+    
+    def _slerp_interpolate(self, params: Dict, alpha: float = 0.5) -> Dict:
+        """
+        SLERP: 球面线性插值
+        
+        简化实现，实际需要考虑参数空间几何
+        """
+        # 简化版本：线性插值
+        return {k: v * (1 - alpha) + v * alpha for k, v in params.items()}
+    
+    def _create_hybrid_model(self, base_model: Any, 
+                              params: Dict) -> Any:
+        """创建杂交模型"""
+        # 这里需要复制基础模型并加载新参数
+        # 简化实现：返回原模型（实际需要深拷贝）
+        import copy
+        hybrid_model = copy.deepcopy(base_model)
+        hybrid_model.model_id = f"hybrid_{base_model.model_id}"
+        
+        # 加载新参数
+        for name, param in hybrid_model.model.named_parameters():
+            if name in params:
+                param.data = params[name].to(param.device)
+        
+        return hybrid_model
